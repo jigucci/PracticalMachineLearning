@@ -1,0 +1,148 @@
+---
+title: "Practical Machine Learning"
+output: html_document
+---
+
+## Coursera Practical Machine Learning Project
+
+###Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+###Data
+
+The data for this project come from this source:http://groupware.les.inf.puc-rio.br/har
+
+###Modeling
+
+####1. Cleaning Data
+* Load libraries
+
+The pml-training.csv data is used to devise training and testing sets for fitting of the prediction model. The pml-test.csv data is used to submit 20 test cases based on the fitted model.
+
+```{r}
+library(mlbench)
+library(caret)
+library(ggplot2)
+library(randomForest)
+set.seed(5)
+```
+* Load data
+```{r eval=FALSE}
+download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "pml-training.csv")
+download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "pml-testing.csv")
+```
+* Clean the data
+
+All blank(""),"#DIV/0" and "NA" values are converted to 'NA'.
+
+```{r}
+training<-read.csv('pml-training.csv', na.strings=c("NA","#DIV/0!", ""),head=TRUE)
+test<-read.csv('pml-testing.csv', na.strings=c("NA","#DIV/0!", ""),head=TRUE)
+```
+Get the sumamry and dimension of the training data.
+
+```{r eval=FALSE}
+dim(training)
+summary(training)
+```
+It is found from summary result that it is necessary to remove columns with equal and more than 19216 NAs which will not contribute to the prediction model. This will result in only 60 columns in the dataset.
+```{r}
+training<-training[,colSums(is.na(training))<19216]
+training<-training[sapply(training,function(training) !any(is.na(training)))]
+dim(training)
+```
+Since the first 7 columns are irrelevant to the model prediction, they are removed from the data. In addition, nsv results indicate there is no near zero variance predictor.
+```{r}
+training<-training[,8:60]
+nsv<-nearZeroVar(training,saveMetrics=TRUE)
+nsv
+```
+* Remove highly correlated variables (threshold=0.75)
+```{r}
+classe<-training[,"classe"]
+correlationMatrix<-cor(training[,1:52])
+diag(correlationMatrix)<-0
+correlationMatrix[upper.tri(correlationMatrix)]<-0
+training<-training[,!apply(correlationMatrix,2,function(x) any(x>0.75))]
+training$classe<-classe
+dim(training)
+```
+
+####2. Patitioning Data
+The data is partitioned by the classe variable. 75% of the data will be used to train the model and the remaining for cross validation.
+```{r}
+trainIndex<-createDataPartition(training$classe,p=0.75,list=FALSE,times=1)
+harTrain<-training[trainIndex,]
+harValidation<-training[-trainIndex,]
+dim(harTrain)
+```
+####3. Determining number of predictors
+Recursive Feature Elimination or RFE is used for feature selection. A Random Forest algorithm is used on each iteration to evaluate the 
+model. The algorithm is configured to explore all possible subsets of the 36 predictors (very time-consuming) . The plot result indicates 
+that 9 predictors are enough to avoid overfitting and achieve pretty high accuracy from prediction model.
+
+```{r eval=FALSE}
+control<-rfeControl(functions=rfFuncs,method="cv",number=10)
+results <- rfe(training[,1:36], training[,37], sizes=c(1:36), rfeControl=control)
+print(results)
+plot(results,type=c("g","o"))
+```
+####4. Modeling
+Random Forest is chosen because of the following attributes.
+
+* accuracy
+* handle lots of irrelevant features
+* Moderate prediction speed
+* automatically learn feature interaction
+
+Random Forest with tuning parameter 'mtry' at a value of 9 is used to develop the prediction model. It seems in sample error rate will be higher than out of sample error rate with a random forest model with only 9 variables tried at each split.
+
+```{r longanalysis, cache=TRUE}
+mtryGrid<-expand.grid(mtry=9)
+rfTune<-train(classe~.,method="rf",data=harTrain,trControl=trainControl(verboseIter=FALSE,method="oob"),tuneGrid=mtryGrid)
+print(rfTune$finalModel)
+rfTune
+```
+
+Importance of the model variables is shown in the below plot.
+```{r}
+plot(varImp(rfTune))
+```
+
+Box plot for the top 3 important variables.
+```{r}
+featurePlot(harTrain[,c("pitch_belt","pitch_forearm")],y=harTrain$classe,plot="box")
+featurePlot(harTrain$magnet_dumbbell_z,y=harTrain$classe,plot="box")
+```
+
+It is obvious that even the top 3 most important predictors are not good enough to classify the dataset.
+
+####5. Cross validation
+
+```{r}
+pred1<-predict(rfTune,newdata=harValidation)
+confMatrix<-confusionMatrix(pred1,harValidation$classe)
+confMatrix
+```
+
+The in sample error rate from the training set is 0.74% and the out of sample error rate from the validation set is 0.53%.
+Since the out of sample error rate is less than the in sample error rate, it indicates this predition model is not overfitting and it is generally accurate for independent dataset.
+
+####6. 20 test cases
+```{r eval=FALSE}
+colnames<-names(harTrain)
+test<-test[,colnames(test)%in%colnames]
+test1<-predict(rfTune,newdata=test)
+test1<-as.character(test1)
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(test1)
+
+
